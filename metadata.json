@@ -1,0 +1,6 @@
+{
+  "name": "Módulo de Gestão de Frota — Órion / Conecta",
+  "description": "Módulo completo e desacoplado de controle e gestão de frota (abastecimentos, manutenções, despesas, receitas, percursos, lembretes e checklist digital), projetado para integração via Git no ecossistema React 19 + TanStack Start + Lovable Cloud.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

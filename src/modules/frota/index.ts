@@ -1,0 +1,10 @@
+export { FleetModule } from './FleetModule';
+export { FuelingForm, fuelingFormSchema, type FuelingFormProps, type FuelingFormValues } from './components/FuelingForm';
+export { FleetProvider, useFleet } from './context/FleetContext';
+export { LocalStorageFleetAdapter, RemoteApiFleetAdapter } from './services/fleet.adapter';
+export { createSeedSnapshot } from './services/fleet.seed';
+export * from './types/fleet.types';
+export * from './schemas/fleet.schemas';
+export * from './utils/fleet.calculations';
+export { generateFleetReportPdf, downloadFleetReportPdf } from './utils/fleet.pdf';
+export { GIT_SUBTREE_COMMANDS, TANSTACK_BRIDGE_SNIPPET } from './integration/tanstack-start-bridge';

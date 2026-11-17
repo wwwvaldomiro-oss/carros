@@ -6,6 +6,7 @@ import { QuickEntryModal, type QuickEntryKind } from './components/QuickEntryMod
 import { FleetProvider } from './context/FleetContext';
 import { ChecklistsPage } from './pages/ChecklistsPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { DocumentsDebtsPage } from './pages/DocumentsDebtsPage';
 import { LedgerPage } from './pages/LedgerPage';
 import { RoutesRemindersPage } from './pages/RoutesRemindersPage';
 import { VehiclesDriversPage } from './pages/VehiclesDriversPage';
@@ -46,6 +47,7 @@ export const FleetModule: React.FC<FleetModuleProps> = ({
           />
         )}
         {activeTab === 'veiculos' && <VehiclesDriversPage />}
+        {activeTab === 'documentos' && <DocumentsDebtsPage />}
         {activeTab === 'lancamentos' && (
           <LedgerPage onOpenQuickEntry={handleOpenQuickEntry} />
         )}

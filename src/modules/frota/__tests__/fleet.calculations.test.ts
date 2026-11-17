@@ -1,19 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { fuelingFormSchema } from '../components/FuelingForm';
+import { documentObligationSchema, maintenanceSchema } from '../schemas/fleet.schemas';
 import { createSeedSnapshot } from '../services/fleet.seed';
-import type { FuelingRecord } from '../types/fleet.types';
+import type { FineRecord, FuelingRecord, VehicleDocumentRecord } from '../types/fleet.types';
 import {
+  checkDriverAndVehicleOperationLock,
   computeFleetKpis,
   computeRouteAudit,
   computeVehicleTcoSummary,
   detectConsumptionAnomalies,
   evaluateCnhStatus,
+  evaluateDocumentStatus,
+  evaluateDriverCtbPoints,
+  evaluateFineNicAlert,
   evaluateReminderStatus,
   getEffectiveFineAmount,
+  getLicensePlateDueInfo,
   parseNfceQrPayload,
   recalculateFuelingAverages,
   suggestDriverForDate,
 } from '../utils/fleet.calculations';
+import { generateFiciPdf } from '../utils/fleet.pdf';
 
 describe('Fleet Calculations Engine', () => {
   it('calculates full-tank-to-full-tank km/L accurately including intermediate partial fills', () => {
@@ -127,7 +134,7 @@ describe('Fleet Calculations Engine', () => {
     expect(audit?.deltaPercent).toBeGreaterThan(15);
   });
 
-  it('validates FuelingForm schema via Zod', () => {
+  it('validates FuelingForm, Maintenance, and DocumentObligation schemas via Zod', () => {
     const valid = fuelingFormSchema.safeParse({
       vehicleId: 'veh-1',
       driverId: 'drv-1',
@@ -153,5 +160,159 @@ describe('Fleet Calculations Engine', () => {
       fullTank: true,
     });
     expect(invalid.success).toBe(false);
+
+    const validMaint = maintenanceSchema.safeParse({
+      vehicleId: 'veh-1',
+      type: 'PREVENTIVA',
+      date: '2026-11-17',
+      odometer: 48620,
+      category: 'Revisão 50 mil km',
+      partsCost: 0,
+      laborCost: 0,
+      totalCost: 1450.9,
+      attachmentUrl: 'data:image/jpeg;base64,/9j/4AAQ',
+    });
+    expect(validMaint.success).toBe(true);
+
+    const validDoc = documentObligationSchema.safeParse({
+      vehicleId: 'veh-1',
+      docType: 'CRLV',
+      referenceYear: 2026,
+      dueDate: '2026-12-31',
+      amount: 160.22,
+      stateUf: 'SP',
+      providerOrAuthority: 'Detran-SP',
+      status: 'PENDENTE',
+    });
+    expect(validDoc.success).toBe(true);
+  });
+
+  it('computes SP plate-digit calendar and evaluates document statuses', () => {
+    const calDigit2 = getLicensePlateDueInfo('FTR4A82', 'SP', 2026);
+    expect(calDigit2.finalDigit).toBe(2);
+    expect(calDigit2.crlvDueDate).toBe('2026-07-31');
+
+    const calDigit9 = getLicensePlateDueInfo('KLM7E19', 'SP', 2026);
+    expect(calDigit9.finalDigit).toBe(9);
+    expect(calDigit9.crlvDueDate).toBe('2026-11-30');
+
+    const paidDoc: VehicleDocumentRecord = {
+      id: 'd1',
+      vehicleId: 'veh-1',
+      docType: 'IPVA',
+      referenceYear: 2026,
+      dueDate: '2026-01-15',
+      amount: 2400,
+      status: 'PAGO',
+    };
+    expect(evaluateDocumentStatus(paidDoc, '2026-11-17').status).toBe('PAGO');
+
+    const overdueDoc: VehicleDocumentRecord = {
+      ...paidDoc,
+      id: 'd2',
+      docType: 'CRLV',
+      dueDate: '2026-10-31',
+      status: 'PENDENTE',
+    };
+    expect(evaluateDocumentStatus(overdueDoc, '2026-11-17').status).toBe('VENCIDO');
+
+    const dueSoonDoc: VehicleDocumentRecord = {
+      ...paidDoc,
+      id: 'd3',
+      docType: 'SEGURO',
+      dueDate: '2026-11-28',
+      status: 'PENDENTE',
+    };
+    expect(evaluateDocumentStatus(dueSoonDoc, '2026-11-17').status).toBe('ATENCAO');
+  });
+
+  it('applies CTB Art. 261 trailing 12-month point thresholds (40 / 30 / 20 pts)', () => {
+    const seed = createSeedSnapshot();
+    const driver = seed.drivers[0];
+
+    const noGravissima: FineRecord[] = [
+      {
+        id: 'm1',
+        vehicleId: 'veh-1',
+        driverId: driver.id,
+        date: '2026-10-01',
+        infractionCode: '7455-0',
+        description: 'Média',
+        points: 4,
+        amount: 130.16,
+        sneDiscountApplied: false,
+        status: 'PAGA',
+      },
+    ];
+    const res40 = evaluateDriverCtbPoints(driver, noGravissima, '2026-11-17');
+    expect(res40.maxAllowedPoints).toBe(40);
+    expect(res40.riskLevel).toBe('OK');
+
+    const oneGravissima: FineRecord[] = [
+      { ...noGravissima[0], id: 'g1', points: 7, amount: 293.47 },
+      { ...noGravissima[0], id: 'g2', points: 5, amount: 195.23 },
+      { ...noGravissima[0], id: 'g3', points: 5, amount: 195.23 },
+      { ...noGravissima[0], id: 'g4', points: 5, amount: 195.23 },
+    ];
+    const res30 = evaluateDriverCtbPoints(driver, oneGravissima, '2026-11-17');
+    expect(res30.maxAllowedPoints).toBe(30);
+    expect(res30.points12m).toBe(22);
+    expect(res30.riskLevel).toBe('ATENCAO');
+
+    const twoGravissimas: FineRecord[] = [
+      { ...noGravissima[0], id: 'gg1', points: 7, amount: 293.47 },
+      { ...noGravissima[0], id: 'gg2', points: 7, amount: 293.47 },
+      { ...noGravissima[0], id: 'gg3', points: 6, amount: 293.47 },
+    ];
+    const res20 = evaluateDriverCtbPoints(driver, twoGravissimas, '2026-11-17');
+    expect(res20.maxAllowedPoints).toBe(20);
+    expect(res20.points12m).toBe(20);
+    expect(res20.riskLevel).toBe('SUSPENSAO');
+  });
+
+  it('triggers anti-NIC countdown tiers (D-2, D-5, D-10, VENCIDO) and pre-trip operation locks', () => {
+    const baseFine: FineRecord = {
+      id: 'nic-1',
+      vehicleId: 'veh-1',
+      date: '2026-11-01',
+      infractionCode: '7463-0',
+      description: 'Excesso velocidade',
+      points: 5,
+      amount: 195.23,
+      sneDiscountApplied: true,
+      status: 'PENDENTE',
+      driverIndicationDeadline: '2026-11-19',
+    };
+
+    expect(evaluateFineNicAlert(baseFine, '2026-11-17').tier).toBe('D-2');
+    expect(
+      evaluateFineNicAlert({ ...baseFine, driverIndicationDeadline: '2026-11-21' }, '2026-11-17').tier
+    ).toBe('D-5');
+    expect(
+      evaluateFineNicAlert({ ...baseFine, driverIndicationDeadline: '2026-11-25' }, '2026-11-17').tier
+    ).toBe('D-10');
+    expect(
+      evaluateFineNicAlert({ ...baseFine, driverIndicationDeadline: '2026-11-15' }, '2026-11-17').tier
+    ).toBe('VENCIDO');
+
+    const seed = createSeedSnapshot();
+    const expiredDriver = { ...seed.drivers[0], cnhExpiry: '2026-10-01' };
+    const overdueVehicle = seed.vehicles.find((v) => v.id === 'veh-3')!;
+    const lock = checkDriverAndVehicleOperationLock(overdueVehicle, expiredDriver, seed, '2026-11-17');
+    expect(lock.blocked).toBe(true);
+    expect(lock.reasons.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('generates a valid FICI PDF document using pdf-lib', async () => {
+    const seed = createSeedSnapshot();
+    const fine = seed.fines[0];
+    const vehicle = seed.vehicles.find((v) => v.id === fine.vehicleId);
+    const driver = seed.drivers.find((d) => d.id === fine.driverId);
+
+    const bytes = await generateFiciPdf(fine, vehicle, driver);
+    expect(bytes.length).toBeGreaterThan(500);
+    const header = new TextDecoder().decode(bytes.slice(0, 4));
+    expect(header).toBe('%PDF');
   });
 });
+

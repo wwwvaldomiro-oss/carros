@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertTriangle, Camera, QrCode } from 'lucide-react';
+import { AlertTriangle, Camera, Loader2, QrCode, ScanLine } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFleet } from '../context/FleetContext';
+import {
+  parseReceiptImageWithGemini,
+  type ParsedReceiptResult,
+} from '../services/receipt-ocr.service';
 import type { FuelType } from '../types/fleet.types';
 import {
   formatBRL,
+  formatDateBR,
   formatKm,
   formatNumberBR,
   getFuelUnit,
@@ -63,6 +68,11 @@ export const FuelingForm: React.FC<FuelingFormProps> = ({
   const { snapshot, selectedVehicleFilter, addFueling } = useFleet();
   const [showNfceImporter, setShowNfceImporter] = useState(false);
   const [nfceRawInput, setNfceRawInput] = useState('');
+  const [isScanningReceipt, setIsScanningReceipt] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const defaultVehicleId =
     initialVehicleId ??
@@ -270,6 +280,77 @@ export const FuelingForm: React.FC<FuelingFormProps> = ({
     reader.readAsDataURL(file);
   };
 
+  const handleReceiptOcrUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setIsScanningReceipt(true);
+    setOcrStatus(null);
+
+    try {
+      const result: ParsedReceiptResult = await parseReceiptImageWithGemini(
+        file,
+        'ABASTECIMENTO'
+      );
+
+      setValue('odometerPhotoUrl', result.previewDataUrl);
+
+      const filledFields: string[] = [];
+
+      if (result.date) {
+        setValue('date', result.date, { shouldValidate: true, shouldDirty: true });
+        filledFields.push(`Data (${formatDateBR(result.date)})`);
+      }
+
+      if (result.quantity && result.quantity > 0) {
+        setValue('quantity', result.quantity, { shouldValidate: true, shouldDirty: true });
+      }
+
+      if (result.totalCost && result.totalCost > 0) {
+        setValue('totalCost', result.totalCost, { shouldValidate: true, shouldDirty: true });
+        filledFields.push(`Valor total (${formatBRL(result.totalCost)})`);
+
+        const effectiveQty =
+          result.quantity && result.quantity > 0 ? result.quantity : watchedQuantity;
+        if (result.unitPrice && result.unitPrice > 0) {
+          setValue('unitPrice', result.unitPrice, { shouldValidate: true, shouldDirty: true });
+        } else if (Number.isFinite(effectiveQty) && effectiveQty > 0) {
+          setValue('unitPrice', Number((result.totalCost / effectiveQty).toFixed(3)), {
+            shouldValidate: true,
+            shouldDirty: true,
+          });
+        }
+      } else if (result.unitPrice && result.unitPrice > 0) {
+        setValue('unitPrice', result.unitPrice, { shouldValidate: true, shouldDirty: true });
+      }
+
+      if (result.supplierName) {
+        setValue('stationName', result.supplierName, { shouldDirty: true });
+      }
+      if (result.invoiceNumber) {
+        setValue('nfceKey', result.invoiceNumber, { shouldDirty: true });
+      }
+
+      if (filledFields.length > 0) {
+        const msg = `Leitura concluída: ${filledFields.join(' e ')}.`;
+        setOcrStatus({ type: 'success', message: msg });
+        toast.success(msg);
+      } else {
+        const msg =
+          'A foto foi anexada, mas valor total e data não estavam legíveis. Confira ou tente outra foto.';
+        setOcrStatus({ type: 'error', message: msg });
+        toast.error(msg);
+      }
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : 'Erro ao analisar a foto da nota fiscal.';
+      setOcrStatus({ type: 'error', message: msg });
+      toast.error(msg);
+    } finally {
+      setIsScanningReceipt(false);
+    }
+  };
+
   const onSubmit = async (values: FuelingFormValues) => {
     await addFueling({
       vehicleId: values.vehicleId,
@@ -298,20 +379,50 @@ export const FuelingForm: React.FC<FuelingFormProps> = ({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-      {/* Barra auxiliar NFC-e e Foto do Odômetro */}
+      {/* Barra auxiliar: Leitura de NF por Foto (Gemini), Cupom NFC-e e Foto do Odômetro */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#E7E1D5]">
-        <button
-          type="button"
-          onClick={() => setShowNfceImporter((v) => !v)}
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[#E7E1D5] bg-[#F7F8FA] hover:bg-[#E7E1D5]/40 text-xs font-medium text-[#173D4A] transition-colors cursor-pointer"
-        >
-          <QrCode className="h-3.5 w-3.5" />
-          <span>Importar Cupom NFC-e</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label
+            className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-medium transition-colors ${
+              isScanningReceipt
+                ? 'border-[#B99555] bg-[#B99555]/15 text-[#0C1928] cursor-wait'
+                : 'border-[#173D4A] bg-[#173D4A] hover:bg-[#0C1928] text-white cursor-pointer'
+            }`}
+          >
+            {isScanningReceipt ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ScanLine className="h-3.5 w-3.5 text-[#B99555]" />
+            )}
+            <span>
+              {isScanningReceipt ? 'Lendo nota fiscal...' : 'Ler Nota Fiscal (Foto)'}
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={isScanningReceipt}
+              className="sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                void handleReceiptOcrUpload(file);
+              }}
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={() => setShowNfceImporter((v) => !v)}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[#E7E1D5] bg-[#F7F8FA] hover:bg-[#E7E1D5]/40 text-xs font-medium text-[#173D4A] transition-colors cursor-pointer"
+          >
+            <QrCode className="h-3.5 w-3.5" />
+            <span>QR / Chave NFC-e</span>
+          </button>
+        </div>
 
         <label className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[#E7E1D5] bg-[#F7F8FA] hover:bg-[#E7E1D5]/40 text-xs font-medium text-[#0C1928] cursor-pointer transition-colors">
           <Camera className="h-3.5 w-3.5 text-[#173D4A]" />
-          <span>{watchedPhotoUrl ? 'Foto do odômetro anexada' : 'Foto do painel / cupom'}</span>
+          <span>{watchedPhotoUrl ? 'Foto anexada' : 'Foto do painel'}</span>
           <input
             type="file"
             accept="image/*"
@@ -320,6 +431,18 @@ export const FuelingForm: React.FC<FuelingFormProps> = ({
           />
         </label>
       </div>
+
+      {ocrStatus && (
+        <div
+          className={`px-3.5 py-2.5 rounded-lg border text-xs font-medium ${
+            ocrStatus.type === 'success'
+              ? 'bg-[#2E6F5E]/10 border-[#2E6F5E]/30 text-[#2E6F5E]'
+              : 'bg-[#9E3B3B]/10 border-[#9E3B3B]/30 text-[#9E3B3B]'
+          }`}
+        >
+          {ocrStatus.message}
+        </div>
+      )}
 
       {showNfceImporter && (
         <div className="p-3.5 rounded-lg bg-[#F7F8FA] border border-[#E7E1D5] space-y-2.5">

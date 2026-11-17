@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronUp, Wrench } from 'lucide-react';
+import { AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronUp, ShieldAlert, Wrench } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import type { ChecklistItemResult } from '../types/fleet.types';
-import { formatDateBR, formatKm } from '../utils/fleet.calculations';
+import { checkDriverAndVehicleOperationLock, formatDateBR, formatKm } from '../utils/fleet.calculations';
 
 const DEFAULT_CHECKLIST_ITEMS: { id: string; label: string }[] = [
   { id: 'i1', label: 'Calibragem e sulco dos pneus' },
@@ -67,6 +67,17 @@ export const ChecklistsPage: React.FC = () => {
 
   const hasNonCompliantItem = items.some((it) => !it.compliant);
 
+  const operationLock = useMemo(
+    () =>
+      checkDriverAndVehicleOperationLock(
+        vehicleMap.get(vehicleId),
+        driverMap.get(driverId),
+        snapshot,
+        date
+      ),
+    [vehicleMap, driverMap, vehicleId, driverId, snapshot, date]
+  );
+
   const setItemCompliant = (itemId: string, compliant: boolean) => {
     setItems((prev) =>
       prev.map((it) => (it.id === itemId ? { ...it, compliant } : it))
@@ -129,6 +140,19 @@ export const ChecklistsPage: React.FC = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          {operationLock.blocked && (
+            <div className="p-3.5 rounded-lg bg-[#9E3B3B]/10 border border-[#9E3B3B]/30 space-y-1">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#9E3B3B]">
+                <ShieldAlert className="h-4 w-4 shrink-0" />
+                <span>Alerta de Bloqueio Documental / CTB Pré-Viagem</span>
+              </div>
+              <ul className="list-disc pl-5 text-xs text-[#9E3B3B] space-y-0.5">
+                {operationLock.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-[#0C1928] mb-1.5">Veículo</label>

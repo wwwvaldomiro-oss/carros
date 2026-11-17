@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CarFront,
   ClipboardCheck,
+  FileCheck2,
   GitBranch,
   LayoutDashboard,
   Menu,
@@ -31,6 +32,7 @@ const SECTION_BUTTONS: {
 }[] = [
   { id: 'dashboard', label: 'Visão Geral', icon: LayoutDashboard },
   { id: 'veiculos', label: 'Veículos e Motoristas', icon: CarFront },
+  { id: 'documentos', label: 'Documentos e Débitos', icon: FileCheck2 },
   { id: 'lancamentos', label: 'Lançamentos', icon: Receipt },
   { id: 'checklists', label: 'Checklist Veicular', icon: ClipboardCheck },
   { id: 'percursos', label: 'Percursos e Lembretes', icon: RouteIcon },
@@ -39,6 +41,7 @@ const SECTION_BUTTONS: {
 const TAB_TITLES: Record<FleetTab, string> = {
   dashboard: 'Visão Geral',
   veiculos: 'Veículos e Motoristas',
+  documentos: 'Documentos e Débitos',
   lancamentos: 'Lançamentos',
   checklists: 'Checklist Veicular',
   percursos: 'Percursos e Lembretes',

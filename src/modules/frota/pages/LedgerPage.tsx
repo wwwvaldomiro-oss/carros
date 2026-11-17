@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Check,
   Download,
+  FileDown,
   Landmark,
   Plus,
   Search,
@@ -15,6 +16,7 @@ import { useFleet } from '../context/FleetContext';
 import type { FineStatus, MaintenanceStatus } from '../types/fleet.types';
 import {
   detectConsumptionAnomalies,
+  evaluateFineNicAlert,
   exportRowsToCsv,
   formatBRL,
   formatDateBR,
@@ -24,6 +26,7 @@ import {
   getEffectiveFineAmount,
   getFuelUnit,
 } from '../utils/fleet.calculations';
+import { downloadFiciPdf } from '../utils/fleet.pdf';
 
 interface LedgerPageProps {
   onOpenQuickEntry: (kind: QuickEntryKind) => void;
@@ -719,8 +722,9 @@ export const LedgerPage: React.FC<LedgerPageProps> = ({ onOpenQuickEntry }) => {
                 <tbody className="divide-y divide-[#E7E1D5] text-sm">
                   {filteredFines.map((fn) => {
                     const v = vehicleMap.get(fn.vehicleId);
-                    const d = fn.driverId ? driverMap.get(fn.driverId) : null;
+                    const d = fn.driverId ? driverMap.get(fn.driverId) : undefined;
                     const effective = getEffectiveFineAmount(fn);
+                    const nic = evaluateFineNicAlert(fn);
 
                     return (
                       <tr key={fn.id} className="hover:bg-[#F7F8FA] transition-colors">
@@ -755,10 +759,23 @@ export const LedgerPage: React.FC<LedgerPageProps> = ({ onOpenQuickEntry }) => {
                             <span className="block text-[10px] text-[#2E6F5E]">SNE -40%</span>
                           )}
                         </td>
-                        <td className="py-3 px-4 font-mono-tabular text-xs text-[#5C6B7A] whitespace-nowrap">
-                          {fn.driverIndicationDeadline
-                            ? formatDateBR(fn.driverIndicationDeadline)
-                            : '—'}
+                        <td className="py-3 px-4 font-mono-tabular text-xs whitespace-nowrap">
+                          <span
+                            className={
+                              nic.tier === 'VENCIDO' || nic.tier === 'D-2'
+                                ? 'font-semibold text-[#9E3B3B]'
+                                : nic.tier === 'D-5' || nic.tier === 'D-10'
+                                ? 'font-semibold text-[#A66E1E]'
+                                : 'text-[#5C6B7A]'
+                            }
+                          >
+                            {fn.driverIndicationDeadline
+                              ? formatDateBR(fn.driverIndicationDeadline)
+                              : '—'}
+                          </span>
+                          {nic.tier !== 'NONE' && nic.tier !== 'NO_PRAZO' && (
+                            <span className="block text-[10px] text-[#9E3B3B]">{nic.tier}</span>
+                          )}
                         </td>
                         <td className="py-3 px-4 whitespace-nowrap">
                           <select
@@ -773,14 +790,25 @@ export const LedgerPage: React.FC<LedgerPageProps> = ({ onOpenQuickEntry }) => {
                           </select>
                         </td>
                         <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => deleteFine(fn.id)}
-                            className="p-1.5 rounded-md text-[#5C6B7A] hover:text-[#9E3B3B] hover:bg-[#9E3B3B]/10"
-                            title="Excluir multa"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void downloadFiciPdf(fn, v, d)}
+                              className="inline-flex items-center gap-1 h-7 px-2 rounded border border-[#E7E1D5] text-[11px] font-medium text-[#173D4A] hover:bg-[#F7F8FA]"
+                              title="Baixar FICI em PDF"
+                            >
+                              <FileDown className="h-3 w-3" />
+                              <span>FICI</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteFine(fn.id)}
+                              className="p-1.5 rounded-md text-[#5C6B7A] hover:text-[#9E3B3B] hover:bg-[#9E3B3B]/10"
+                              title="Excluir multa"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

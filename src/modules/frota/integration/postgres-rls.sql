@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS public.fleet_vehicles (
   status VARCHAR(20) NOT NULL DEFAULT 'ATIVO' CHECK (status IN ('ATIVO','MANUTENCAO','INATIVO')),
   assigned_driver_id UUID,
   renavam VARCHAR(20),
+  state_uf CHAR(2),
   tank_capacity_liters NUMERIC(8,2),
   fipe_value NUMERIC(12,2),
   monthly_fixed_cost NUMERIC(10,2),
@@ -155,6 +156,24 @@ CREATE TABLE IF NOT EXISTS public.fleet_reminders (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.fleet_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL,
+  vehicle_id UUID NOT NULL REFERENCES public.fleet_vehicles(id) ON DELETE CASCADE,
+  doc_type VARCHAR(20) NOT NULL CHECK (doc_type IN ('CRLV','IPVA','SEGURO','VISTORIA')),
+  reference_year INTEGER NOT NULL,
+  due_date DATE NOT NULL,
+  amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  state_uf CHAR(2),
+  provider_or_authority VARCHAR(150),
+  policy_or_code VARCHAR(120),
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE','PAGO','ISENTO')),
+  paid_at TIMESTAMPTZ,
+  auto_generated BOOLEAN NOT NULL DEFAULT false,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Habilitar Row Level Security (RLS)
 ALTER TABLE public.fleet_vehicles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_drivers ENABLE ROW LEVEL SECURITY;
@@ -162,6 +181,7 @@ ALTER TABLE public.fleet_fuelings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_maintenances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_fines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fleet_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_checklists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_routes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fleet_reminders ENABLE ROW LEVEL SECURITY;

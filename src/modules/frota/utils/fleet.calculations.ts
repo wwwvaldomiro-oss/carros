@@ -1,4 +1,5 @@
 import type {
+  DocumentType,
   Driver,
   FineRecord,
   FleetReminder,
@@ -7,6 +8,7 @@ import type {
   FuelingRecord,
   RouteTrip,
   Vehicle,
+  VehicleDocumentRecord,
   VehicleStatus,
 } from '../types/fleet.types';
 
@@ -765,3 +767,267 @@ export function exportRowsToCsv(filename: string, headers: string[], rows: (stri
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function documentTypeLabel(docType: DocumentType): string {
+  const map: Record<DocumentType, string> = {
+    CRLV: 'Licenciamento (CRLV-e)',
+    IPVA: 'IPVA',
+    SEGURO: 'Seguro',
+    VISTORIA: 'Vistoria / ANTT',
+  };
+  return map[docType];
+}
+
+export interface PlateDueCalendarInfo {
+  finalDigit: number;
+  stateUf: string;
+  crlvDueDate: string;
+  crlvMonthLabel: string;
+  ipvaDueDate: string;
+  ipvaMonthLabel: string;
+}
+
+const MONTH_NAMES_PT = [
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro',
+];
+
+function lastDayOfMonthIso(year: number, month1To12: number): string {
+  const dt = new Date(year, month1To12, 0);
+  const mm = String(month1To12).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
+
+/**
+ * Calcula vencimento oficial de Licenciamento (CRLV-e) e IPVA a partir do último dígito da placa e UF.
+ * Padrão SP (Portaria Detran-SP): finais 1-2 Jul, 3-4 Ago, 5-6 Set, 7-8 Out, 9 Nov, 0 Dez.
+ * Outras UFs seguem calendário escalonado padrão nacional (Set–Dez) como referência operacional.
+ */
+export function getLicensePlateDueInfo(
+  plate: string,
+  stateUf = 'SP',
+  exerciseYear = 2026
+): PlateDueCalendarInfo {
+  const digits = plate.replace(/\D/g, '');
+  const finalDigit = digits.length > 0 ? Number(digits[digits.length - 1]) : 0;
+  const uf = (stateUf || 'SP').toUpperCase();
+
+  let crlvMonth = 12;
+  if (uf === 'SP') {
+    if (finalDigit === 1 || finalDigit === 2) crlvMonth = 7;
+    else if (finalDigit === 3 || finalDigit === 4) crlvMonth = 8;
+    else if (finalDigit === 5 || finalDigit === 6) crlvMonth = 9;
+    else if (finalDigit === 7 || finalDigit === 8) crlvMonth = 10;
+    else if (finalDigit === 9) crlvMonth = 11;
+    else crlvMonth = 12;
+  } else {
+    if (finalDigit >= 1 && finalDigit <= 3) crlvMonth = 9;
+    else if (finalDigit >= 4 && finalDigit <= 6) crlvMonth = 10;
+    else if (finalDigit >= 7 && finalDigit <= 8) crlvMonth = 11;
+    else crlvMonth = 12;
+  }
+
+  // IPVA Cota Única / Vencimento por final de placa (Jan/Fev)
+  const ipvaMonth = finalDigit >= 1 && finalDigit <= 5 ? 1 : 2;
+  const ipvaDay = finalDigit === 0 ? 24 : 10 + finalDigit;
+  const ipvaDueDate = `${exerciseYear}-${String(ipvaMonth).padStart(2, '0')}-${String(ipvaDay).padStart(2, '0')}`;
+
+  return {
+    finalDigit,
+    stateUf: uf,
+    crlvDueDate: lastDayOfMonthIso(exerciseYear, crlvMonth),
+    crlvMonthLabel: `${MONTH_NAMES_PT[crlvMonth - 1]}/${exerciseYear}`,
+    ipvaDueDate,
+    ipvaMonthLabel: `${MONTH_NAMES_PT[ipvaMonth - 1]}/${exerciseYear}`,
+  };
+}
+
+export function evaluateDocumentStatus(
+  doc: VehicleDocumentRecord,
+  todayIso = '2026-11-17'
+): { status: 'PAGO' | AlertSeverity; daysDiff: number; label: string } {
+  if (doc.status === 'PAGO' || doc.status === 'ISENTO') {
+    return {
+      status: 'PAGO',
+      daysDiff: 999,
+      label: doc.status === 'ISENTO' ? 'Isento' : 'Quitado',
+    };
+  }
+
+  const todayMs = new Date(`${todayIso}T12:00:00`).getTime();
+  const dueMs = new Date(`${doc.dueDate}T12:00:00`).getTime();
+  const daysDiff = Math.ceil((dueMs - todayMs) / (1000 * 60 * 60 * 24));
+
+  if (daysDiff < 0) {
+    return {
+      status: 'VENCIDO',
+      daysDiff,
+      label: `Vencido há ${Math.abs(daysDiff)}d`,
+    };
+  }
+  if (daysDiff <= 30) {
+    return {
+      status: 'ATENCAO',
+      daysDiff,
+      label: daysDiff === 0 ? 'Vence hoje' : `Vence em ${daysDiff}d`,
+    };
+  }
+  return {
+    status: 'EM_DIA',
+    daysDiff,
+    label: `Vence ${formatDateBR(doc.dueDate)}`,
+  };
+}
+
+export interface DriverCtbPointsSummary {
+  driverId: string;
+  points12m: number;
+  gravissimaCount: number;
+  maxAllowedPoints: 20 | 30 | 40;
+  riskLevel: 'OK' | 'ATENCAO' | 'SUSPENSAO';
+  activeFinesCount: number;
+}
+
+/**
+ * Motor CTB Art. 261 (Pontuação em 12 meses):
+ * - 0 infrações gravíssimas (7 pts): limite 40 pontos
+ * - 1 infração gravíssima (7 pts): limite 30 pontos
+ * - 2+ infrações gravíssimas: limite 20 pontos
+ */
+export function evaluateDriverCtbPoints(
+  driver: Driver,
+  fines: FineRecord[],
+  todayIso = '2026-11-17'
+): DriverCtbPointsSummary {
+  const todayMs = new Date(`${todayIso}T12:00:00`).getTime();
+  const oneYearMs = 365 * 24 * 60 * 60 * 1000;
+
+  const trailingFines = fines.filter((fn) => {
+    if (fn.driverId !== driver.id || fn.status === 'RECORRIDA') return false;
+    const fineMs = new Date(`${fn.date}T12:00:00`).getTime();
+    return todayMs - fineMs <= oneYearMs && fineMs <= todayMs + 7 * 24 * 60 * 60 * 1000;
+  });
+
+  const points12m = trailingFines.reduce((sum, fn) => sum + (fn.points || 0), 0);
+  const gravissimaCount = trailingFines.filter((fn) => fn.points >= 7).length;
+  const maxAllowedPoints: 20 | 30 | 40 =
+    gravissimaCount >= 2 ? 20 : gravissimaCount === 1 ? 30 : 40;
+
+  let riskLevel: 'OK' | 'ATENCAO' | 'SUSPENSAO' = 'OK';
+  if (points12m >= maxAllowedPoints) {
+    riskLevel = 'SUSPENSAO';
+  } else if (points12m >= maxAllowedPoints * 0.7) {
+    riskLevel = 'ATENCAO';
+  }
+
+  return {
+    driverId: driver.id,
+    points12m,
+    gravissimaCount,
+    maxAllowedPoints,
+    riskLevel,
+    activeFinesCount: trailingFines.length,
+  };
+}
+
+export type NicAlertTier = 'NONE' | 'NO_PRAZO' | 'D-10' | 'D-5' | 'D-2' | 'VENCIDO';
+
+export function evaluateFineNicAlert(
+  fine: FineRecord,
+  todayIso = '2026-11-17'
+): { tier: NicAlertTier; daysLeft: number | null; label: string } {
+  if (fine.status !== 'PENDENTE' || !fine.driverIndicationDeadline) {
+    return { tier: 'NONE', daysLeft: null, label: 'Sem pendência FICI' };
+  }
+
+  const todayMs = new Date(`${todayIso}T12:00:00`).getTime();
+  const deadlineMs = new Date(`${fine.driverIndicationDeadline}T12:00:00`).getTime();
+  const daysLeft = Math.ceil((deadlineMs - todayMs) / (1000 * 60 * 60 * 24));
+
+  if (daysLeft < 0) {
+    return {
+      tier: 'VENCIDO',
+      daysLeft,
+      label: `Prazo FICI vencido há ${Math.abs(daysLeft)}d (risco NIC)`,
+    };
+  }
+  if (daysLeft <= 2) {
+    return {
+      tier: 'D-2',
+      daysLeft,
+      label: daysLeft === 0 ? 'FICI vence HOJE (D-2)' : `FICI em ${daysLeft}d (Crítico D-2)`,
+    };
+  }
+  if (daysLeft <= 5) {
+    return {
+      tier: 'D-5',
+      daysLeft,
+      label: `FICI em ${daysLeft}d (Urgente D-5)`,
+    };
+  }
+  if (daysLeft <= 10) {
+    return {
+      tier: 'D-10',
+      daysLeft,
+      label: `FICI em ${daysLeft}d (Atenção D-10)`,
+    };
+  }
+  return {
+    tier: 'NO_PRAZO',
+    daysLeft,
+    label: `Indicar até ${formatDateBR(fine.driverIndicationDeadline)}`,
+  };
+}
+
+export function checkDriverAndVehicleOperationLock(
+  vehicle: Vehicle | undefined,
+  driver: Driver | undefined,
+  snapshot: FleetStateSnapshot,
+  todayIso = '2026-11-17'
+): { blocked: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+
+  if (driver) {
+    const cnh = evaluateCnhStatus(driver, todayIso);
+    if (cnh.status === 'VENCIDO') {
+      reasons.push(`CNH de ${driver.name} vencida (${cnh.label}).`);
+    }
+    const ctb = evaluateDriverCtbPoints(driver, snapshot.fines ?? [], todayIso);
+    if (ctb.riskLevel === 'SUSPENSAO') {
+      reasons.push(
+        `Motorista atingiu ${ctb.points12m}/${ctb.maxAllowedPoints} pontos CTB nos últimos 12 meses.`
+      );
+    }
+  }
+
+  if (vehicle) {
+    const crlvDocs = (snapshot.documents ?? []).filter(
+      (d) => d.vehicleId === vehicle.id && d.docType === 'CRLV'
+    );
+    for (const doc of crlvDocs) {
+      const ev = evaluateDocumentStatus(doc, todayIso);
+      if (ev.status === 'VENCIDO') {
+        reasons.push(
+          `Licenciamento (CRLV-e ${doc.referenceYear}) de ${vehicle.plate} está vencido (${ev.label}).`
+        );
+      }
+    }
+  }
+
+  return {
+    blocked: reasons.length > 0,
+    reasons,
+  };
+}
+

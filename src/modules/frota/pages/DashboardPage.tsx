@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Clock,
+  FileCheck2,
   FileText,
   Fuel,
   Gauge,
@@ -32,13 +33,18 @@ import {
   computeFleetKpis,
   computeVehicleTcoSummary,
   detectConsumptionAnomalies,
+  documentTypeLabel,
   evaluateCnhStatus,
+  evaluateDocumentStatus,
+  evaluateDriverCtbPoints,
+  evaluateFineNicAlert,
   evaluateReminderStatus,
   formatBRL,
   formatDateBR,
   formatKm,
   formatNumberBR,
   fuelTypeLabel,
+  getEffectiveFineAmount,
   getFuelUnit,
 } from '../utils/fleet.calculations';
 import { downloadFleetReportPdf } from '../utils/fleet.pdf';
@@ -156,6 +162,22 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         }
       });
 
+    (snapshot.documents ?? [])
+      .filter((doc) => selectedVehicleFilter === 'TODOS' || doc.vehicleId === selectedVehicleFilter)
+      .forEach((doc) => {
+        const ev = evaluateDocumentStatus(doc);
+        if (ev.status === 'VENCIDO' || ev.status === 'ATENCAO') {
+          const veh = vehicleMap.get(doc.vehicleId);
+          items.push({
+            id: `doc-${doc.id}`,
+            severity: ev.status,
+            title: `${documentTypeLabel(doc.docType)} — ${veh?.plate ?? ''}`,
+            context: `${ev.label}${doc.amount > 0 ? ` · ${formatBRL(doc.amount)}` : ''}`,
+            targetTab: 'documentos',
+          });
+        }
+      });
+
     snapshot.drivers.forEach((drv) => {
       const cnh = evaluateCnhStatus(drv);
       if (cnh.status === 'VENCIDO' || cnh.status === 'ATENCAO') {
@@ -164,7 +186,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           severity: cnh.status,
           title: `CNH — ${drv.name}`,
           context: `Categoria ${drv.cnhCategory} · ${cnh.label}`,
-          targetTab: 'veiculos',
+          targetTab: 'documentos',
+        });
+      }
+      const ctb = evaluateDriverCtbPoints(drv, snapshot.fines ?? []);
+      if (ctb.riskLevel !== 'OK') {
+        items.push({
+          id: `ctb-${drv.id}`,
+          severity: ctb.riskLevel === 'SUSPENSAO' ? 'VENCIDO' : 'ATENCAO',
+          title: `Pontuação CTB (${ctb.points12m}/${ctb.maxAllowedPoints} pts) — ${drv.name}`,
+          context: `${ctb.gravissimaCount} gravíssima(s) nos últimos 12 meses`,
+          targetTab: 'documentos',
         });
       }
     });
@@ -173,12 +205,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       .filter((fn) => fn.status === 'PENDENTE' && (selectedVehicleFilter === 'TODOS' || fn.vehicleId === selectedVehicleFilter))
       .forEach((fn) => {
         const veh = vehicleMap.get(fn.vehicleId);
+        const nic = evaluateFineNicAlert(fn);
         items.push({
           id: `fine-${fn.id}`,
-          severity: 'ATENCAO',
-          title: `Multa pendente (${fn.infractionCode})`,
-          context: `${veh?.plate ?? ''} · Indicação até ${formatDateBR(fn.driverIndicationDeadline ?? '')}`,
-          targetTab: 'lancamentos',
+          severity: nic.tier === 'VENCIDO' || nic.tier === 'D-2' ? 'VENCIDO' : 'ATENCAO',
+          title: `Multa ${fn.infractionCode} · ${nic.label}`,
+          context: `${veh?.plate ?? ''} · SNE ${formatBRL(getEffectiveFineAmount(fn))}`,
+          targetTab: 'documentos',
         });
       });
 
@@ -198,7 +231,28 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       });
 
     return items.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'VENCIDO' ? -1 : 1));
-  }, [anomalies, snapshot.reminders, snapshot.drivers, snapshot.fines, snapshot.checklists, selectedVehicleFilter, vehicleMap]);
+  }, [anomalies, snapshot.reminders, snapshot.documents, snapshot.drivers, snapshot.fines, snapshot.checklists, selectedVehicleFilter, vehicleMap]);
+
+  const docComplianceSummary = useMemo(() => {
+    const docs = (snapshot.documents ?? []).filter(
+      (d) => selectedVehicleFilter === 'TODOS' || d.vehicleId === selectedVehicleFilter
+    );
+    const pendingDocs = docs.filter((d) => d.status === 'PENDENTE');
+    const overdueCount =
+      pendingDocs.filter((d) => evaluateDocumentStatus(d).status === 'VENCIDO').length +
+      snapshot.drivers.filter((drv) => evaluateCnhStatus(drv).status === 'VENCIDO').length;
+    const dueSoonCount =
+      pendingDocs.filter((d) => evaluateDocumentStatus(d).status === 'ATENCAO').length +
+      snapshot.drivers.filter((drv) => evaluateCnhStatus(drv).status === 'ATENCAO').length;
+    const pendingFines = (snapshot.fines ?? []).filter(
+      (f) => f.status === 'PENDENTE' && (selectedVehicleFilter === 'TODOS' || f.vehicleId === selectedVehicleFilter)
+    );
+    const totalPendingAmount =
+      pendingDocs.reduce((s, d) => s + d.amount, 0) +
+      pendingFines.reduce((s, f) => s + getEffectiveFineAmount(f), 0);
+
+    return { overdueCount, dueSoonCount, pendingFinesCount: pendingFines.length, totalPendingAmount };
+  }, [snapshot.documents, snapshot.drivers, snapshot.fines, selectedVehicleFilter]);
 
   const handleExportPdf = async () => {
     setExportingPdf(true);
@@ -349,6 +403,32 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </p>
           </div>
         </div>
+      </section>
+
+      {/* Monitor Resumido de Documentação, CNH, IPVA, Seguro e Multas Anti-NIC */}
+      <section className="bg-white border border-[#E7E1D5] rounded-[10px] px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <FileCheck2 className="h-5 w-5 text-[#173D4A] shrink-0 mt-0.5" />
+          <div>
+            <h2 className="font-display text-sm font-semibold text-[#0C1928]">
+              Monitor de Documentação, Débitos & Anti-NIC (CNH, CRLV, IPVA, Seguros)
+            </h2>
+            <p className="text-xs text-[#5C6B7A] mt-0.5 font-mono-tabular">
+              <strong className={docComplianceSummary.overdueCount > 0 ? 'text-[#9E3B3B]' : 'text-[#0C1928]'}>
+                {docComplianceSummary.overdueCount} vencido(s)
+              </strong>{' '}
+              · {docComplianceSummary.dueSoonCount} a vencer em 30d · {docComplianceSummary.pendingFinesCount} multa(s) FICI · Total em aberto:{' '}
+              <strong className="text-[#173D4A]">{formatBRL(docComplianceSummary.totalPendingAmount)}</strong>
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onNavigateTab('documentos')}
+          className="h-9 px-4 rounded-lg border border-[#E7E1D5] bg-[#F7F8FA] hover:bg-[#E7E1D5]/40 text-xs font-medium text-[#173D4A] whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          Abrir Painel Documentos & Débitos
+        </button>
       </section>
 
       {/* Gráfico + Alertas (incluindo Anomalias de Consumo e Multas) */}

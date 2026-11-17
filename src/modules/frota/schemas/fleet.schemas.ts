@@ -22,6 +22,7 @@ export const vehicleSchema = z.object({
   status: z.enum(['ATIVO', 'MANUTENCAO', 'INATIVO']),
   assignedDriverId: z.string().optional(),
   renavam: z.string().trim().optional(),
+  stateUf: z.string().trim().max(2).optional(),
   tankCapacityLiters: z.coerce.number().min(0).optional(),
   fipeValue: z.coerce.number().min(0).optional(),
   monthlyFixedCost: z.coerce.number().min(0).optional(),
@@ -65,6 +66,7 @@ export const maintenanceSchema = z.object({
   providerName: z.string().trim().optional(),
   partsCost: z.coerce.number().min(0, 'Custo inválido'),
   laborCost: z.coerce.number().min(0, 'Custo inválido'),
+  totalCost: z.coerce.number().min(0, 'Valor total inválido').optional(),
   notes: z.string().trim().optional(),
   attachmentUrl: z.string().trim().optional(),
 });
@@ -124,3 +126,16 @@ export const reminderSchema = z
     message: 'Defina uma data de vencimento ou um odômetro alvo',
     path: ['dueDate'],
   });
+
+export const documentObligationSchema = z.object({
+  vehicleId: z.string().min(1, 'Selecione o veículo'),
+  docType: z.enum(['CRLV', 'IPVA', 'SEGURO', 'VISTORIA']),
+  referenceYear: z.coerce.number().int().min(2020).max(2035),
+  dueDate: z.string().regex(isoDateRegex, 'Data de vencimento inválida'),
+  amount: z.coerce.number().min(0, 'Valor inválido'),
+  stateUf: z.string().trim().max(2).optional(),
+  providerOrAuthority: z.string().trim().optional(),
+  policyOrCode: z.string().trim().optional(),
+  status: z.enum(['PENDENTE', 'PAGO', 'ISENTO']),
+  notes: z.string().trim().optional(),
+});

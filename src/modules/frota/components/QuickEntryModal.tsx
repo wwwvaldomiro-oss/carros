@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Loader2, ScanLine, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useFleet } from '../context/FleetContext';
 import {
   expenseOrRevenueSchema,
@@ -7,9 +8,11 @@ import {
   maintenanceSchema,
   routeTripSchema,
 } from '../schemas/fleet.schemas';
+import { parseReceiptImageWithGemini } from '../services/receipt-ocr.service';
 import type { FineStatus, LedgerKind, MaintenanceType } from '../types/fleet.types';
 import {
   formatBRL,
+  formatDateBR,
   formatKm,
   formatNumberBR,
   suggestDriverForDate,
@@ -70,7 +73,14 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
   const [providerName, setProviderName] = useState('');
   const [partsCost, setPartsCost] = useState('0');
   const [laborCost, setLaborCost] = useState('0');
+  const [maintTotalCost, setMaintTotalCost] = useState('0');
   const [maintNotes, setMaintNotes] = useState('');
+  const [maintAttachmentUrl, setMaintAttachmentUrl] = useState<string | undefined>(undefined);
+  const [isScanningMaintReceipt, setIsScanningMaintReceipt] = useState(false);
+  const [maintOcrStatus, setMaintOcrStatus] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   // Financeiro (Despesa / Receita)
   const [ledgerKind, setLedgerKind] = useState<LedgerKind>('DESPESA');
@@ -105,6 +115,13 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     if (open) {
       setKind(initialKind);
       setErrorMsg(null);
+      setMaintOcrStatus(null);
+      setMaintAttachmentUrl(undefined);
+      setPartsCost('0');
+      setLaborCost('0');
+      setMaintTotalCost('0');
+      setProviderName('');
+      setMaintNotes('');
       const vehId =
         selectedVehicleFilter !== 'TODOS'
           ? selectedVehicleFilter
@@ -152,6 +169,12 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
       if (kind === 'MANUTENCAO') {
         const pCost = parseFloat(partsCost) || 0;
         const lCost = parseFloat(laborCost) || 0;
+        const explicitTotal = parseFloat(maintTotalCost);
+        const resolvedTotal =
+          Number.isFinite(explicitTotal) && explicitTotal > 0
+            ? Number(explicitTotal.toFixed(2))
+            : Number((pCost + lCost).toFixed(2));
+
         const parsed = maintenanceSchema.safeParse({
           vehicleId,
           driverId: driverId || undefined,
@@ -163,7 +186,9 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
           providerName,
           partsCost: pCost,
           laborCost: lCost,
+          totalCost: resolvedTotal,
           notes: maintNotes,
+          attachmentUrl: maintAttachmentUrl,
         });
         if (!parsed.success) {
           setErrorMsg(parsed.error.issues[0]?.message ?? 'Verifique os campos.');
@@ -172,7 +197,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
         }
         await addMaintenance({
           ...parsed.data,
-          totalCost: Number((parsed.data.partsCost + parsed.data.laborCost).toFixed(2)),
+          totalCost: resolvedTotal,
         });
       } else if (kind === 'FINANCEIRO') {
         const parsed = expenseOrRevenueSchema.safeParse({
@@ -241,9 +266,93 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
     0,
     (parseFloat(endOdometer) || 0) - (parseFloat(startOdometer) || 0)
   );
-  const maintTotalPreview = (parseFloat(partsCost) || 0) + (parseFloat(laborCost) || 0);
   const effectiveFinePreview =
     (parseFloat(fineAmount) || 0) * (sneDiscountApplied ? 0.6 : 1);
+
+  const handlePartsCostChange = (val: string) => {
+    setPartsCost(val);
+    const p = parseFloat(val) || 0;
+    const l = parseFloat(laborCost) || 0;
+    setMaintTotalCost(Number((p + l).toFixed(2)).toString());
+  };
+
+  const handleLaborCostChange = (val: string) => {
+    setLaborCost(val);
+    const p = parseFloat(partsCost) || 0;
+    const l = parseFloat(val) || 0;
+    setMaintTotalCost(Number((p + l).toFixed(2)).toString());
+  };
+
+  const handleMaintReceiptOcrUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setIsScanningMaintReceipt(true);
+    setMaintOcrStatus(null);
+
+    try {
+      const result = await parseReceiptImageWithGemini(file, 'MANUTENCAO');
+      setMaintAttachmentUrl(result.previewDataUrl);
+
+      const filled: string[] = [];
+      if (result.date) {
+        setDate(result.date);
+        filled.push(`Data (${formatDateBR(result.date)})`);
+      }
+
+      if (result.partsCost !== null) {
+        setPartsCost(String(Number(result.partsCost.toFixed(2))));
+      }
+      if (result.laborCost !== null) {
+        setLaborCost(String(Number(result.laborCost.toFixed(2))));
+      }
+
+      if (result.totalCost && result.totalCost > 0) {
+        setMaintTotalCost(Number(result.totalCost.toFixed(2)).toString());
+        filled.push(`Valor total (${formatBRL(result.totalCost)})`);
+        if (result.partsCost === null && result.laborCost === null) {
+          setPartsCost('0');
+          setLaborCost('0');
+        }
+      } else if (result.partsCost !== null || result.laborCost !== null) {
+        const sum = (result.partsCost ?? 0) + (result.laborCost ?? 0);
+        if (sum > 0) {
+          setMaintTotalCost(Number(sum.toFixed(2)).toString());
+          filled.push(`Valor total (${formatBRL(sum)})`);
+        }
+      }
+
+      if (result.supplierName) {
+        setProviderName(result.supplierName);
+      }
+      if (result.serviceSummary && maintCategory === 'Troca de óleo e filtros') {
+        setMaintCategory(result.serviceSummary);
+      }
+      if (result.invoiceNumber) {
+        setMaintNotes((prev) =>
+          prev.trim() ? `${prev.trim()} | NF: ${result.invoiceNumber}` : `NF: ${result.invoiceNumber}`
+        );
+      }
+
+      if (filled.length > 0) {
+        const msg = `Leitura concluída: ${filled.join(' e ')}.`;
+        setMaintOcrStatus({ type: 'success', message: msg });
+        toast.success(msg);
+      } else {
+        const msg =
+          'A foto foi anexada, mas valor total e data não estavam legíveis. Confira ou envie uma imagem mais nítida.';
+        setMaintOcrStatus({ type: 'error', message: msg });
+        toast.error(msg);
+      }
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : 'Erro ao analisar a foto da nota fiscal.';
+      setMaintOcrStatus({ type: 'error', message: msg });
+      toast.error(msg);
+    } finally {
+      setIsScanningMaintReceipt(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0C1928]/60 backdrop-blur-[1px]">
@@ -356,6 +465,67 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
 
             {kind === 'MANUTENCAO' && (
               <>
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#E7E1D5]">
+                  <label
+                    className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-medium transition-colors ${
+                      isScanningMaintReceipt
+                        ? 'border-[#B99555] bg-[#B99555]/15 text-[#0C1928] cursor-wait'
+                        : 'border-[#173D4A] bg-[#173D4A] hover:bg-[#0C1928] text-white cursor-pointer'
+                    }`}
+                  >
+                    {isScanningMaintReceipt ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ScanLine className="h-3.5 w-3.5 text-[#B99555]" />
+                    )}
+                    <span>
+                      {isScanningMaintReceipt
+                        ? 'Lendo nota fiscal...'
+                        : 'Ler Nota Fiscal (Foto)'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={isScanningMaintReceipt}
+                      className="sr-only"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        void handleMaintReceiptOcrUpload(file);
+                      }}
+                    />
+                  </label>
+
+                  {maintAttachmentUrl && (
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={maintAttachmentUrl}
+                        alt="Nota fiscal anexada"
+                        className="h-8 w-11 object-cover rounded border border-[#E7E1D5]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setMaintAttachmentUrl(undefined)}
+                        className="text-[11px] font-medium text-[#9E3B3B] hover:underline"
+                      >
+                        Remover anexo
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {maintOcrStatus && (
+                  <div
+                    className={`px-3.5 py-2.5 rounded-lg border text-xs font-medium ${
+                      maintOcrStatus.type === 'success'
+                        ? 'bg-[#2E6F5E]/10 border-[#2E6F5E]/30 text-[#2E6F5E]'
+                        : 'bg-[#9E3B3B]/10 border-[#9E3B3B]/30 text-[#9E3B3B]'
+                    }`}
+                  >
+                    {maintOcrStatus.message}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-xs font-medium text-[#0C1928] mb-1.5">Tipo</label>
@@ -429,7 +599,7 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                       type="number"
                       step="0.01"
                       value={partsCost}
-                      onChange={(e) => setPartsCost(e.target.value)}
+                      onChange={(e) => handlePartsCostChange(e.target.value)}
                       className="w-full h-10 rounded-lg border border-[#E7E1D5] px-3 text-sm font-mono-tabular"
                     />
                   </div>
@@ -441,15 +611,23 @@ export const QuickEntryModal: React.FC<QuickEntryModalProps> = ({
                       type="number"
                       step="0.01"
                       value={laborCost}
-                      onChange={(e) => setLaborCost(e.target.value)}
+                      onChange={(e) => handleLaborCostChange(e.target.value)}
                       className="w-full h-10 rounded-lg border border-[#E7E1D5] px-3 text-sm font-mono-tabular"
                     />
                   </div>
-                  <div className="flex flex-col justify-end">
-                    <span className="text-[11px] text-[#5C6B7A]">Total calculado</span>
-                    <span className="h-10 flex items-center text-sm font-semibold text-[#173D4A] font-mono-tabular">
-                      {formatBRL(maintTotalPreview)}
-                    </span>
+                  <div>
+                    <label className="block text-xs font-medium text-[#0C1928] mb-1.5">
+                      Valor Total (R$)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={maintTotalCost}
+                      onChange={(e) => setMaintTotalCost(e.target.value)}
+                      className="w-full h-10 rounded-lg border border-[#E7E1D5] bg-white px-3 text-sm font-semibold font-mono-tabular text-[#173D4A] focus:outline-none focus:ring-2 focus:ring-[#173D4A]"
+                      required
+                    />
                   </div>
                 </div>
 

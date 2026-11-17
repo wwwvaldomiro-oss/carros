@@ -2,7 +2,7 @@ import type { FleetRepositoryAdapter, FleetStateSnapshot } from '../types/fleet.
 import { recalculateFuelingAverages } from '../utils/fleet.calculations';
 import { createSeedSnapshot } from './fleet.seed';
 
-const STORAGE_KEY = 'orion_conecta_modulo_frota_v2';
+const STORAGE_KEY = 'orion_conecta_modulo_frota_v3';
 
 function normalizeSnapshot(parsed: Partial<FleetStateSnapshot>): FleetStateSnapshot {
   return {
@@ -12,6 +12,7 @@ function normalizeSnapshot(parsed: Partial<FleetStateSnapshot>): FleetStateSnaps
     maintenances: parsed.maintenances ?? [],
     ledger: parsed.ledger ?? [],
     fines: parsed.fines ?? [],
+    documents: parsed.documents ?? [],
     checklists: parsed.checklists ?? [],
     routes: parsed.routes ?? [],
     reminders: parsed.reminders ?? [],
